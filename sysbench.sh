@@ -2,25 +2,47 @@
 
 set -euo pipefail
 
-# the variables
-TEST_FILE="testfile.bin"
-TEST_SIZE_MB=1000
-REPEAT_COUNT=5 # harusnya 6, soalnya run pertama di discard tp blm i sesuaiin
+cleanup() {
+    #clean up temp files on exit or interrupt
+    if [[ -n "${TEST_FILE:-}" ]] && [[ -f "$TEST_FILE" ]]; then
+        rm -f "$TEST_FILE"
+    fi
+}
 
-# array result idk bru
-BUFFERED_RESULTS=()
-FLUSH_RESULTS=()
-WARMREAD_RESULTS=()
-COLDREAD_RESULTS=()
-RANDOM_RESULTS=()
+benchmark_timing_floor(){
+    echo "Establishing timing floor..."
+    local iterations=1000
+    local start_time
+    local end_time
+    local elapsed
+
+    #capture the start time using nanosecond resolution wall-clock time
+    start_time=$(date +%s.%N)
+
+    #run an empty timed region to measure the cost of the timing calls themselves
+    for ((i=1; i<=iterations; i++)); do
+        _=$(date +%s.%N)
+    done
+
+    #capture the end time
+    end_time=$(date +%s.%N)
+
+    #bash can't do floating point math, so use awk to calculate the difference
+    elapsed=$(awk -v start="$start_time" -v end="$end_time" 'BEGIN { print end - start }')
+
+    #calculate the average time per call in milliseconds
+    TIMING_FLOOR_MS=$(awk -v el="$elapsed" -v iter="$iterations" 'BEGIN { printf "%.3f", (el / iter) * 1000 }')
+
+    echo "Timing floor: ~${TIMING_FLOOR_MS} ms per call."
+}
 
 benchmark_disk_write() {
     # Buffered write
-    buffered_result=$(dd if=/dev/zero of="$TEST_FILE" bs=1M count=1000 2>&1)
+    buffered_result=$(dd if=/dev/zero of="$TEST_FILE" bs=1M count="${TEST_SIZE_MB}" 2>&1)
     buffered_speed=$(echo "$buffered_result" | tail -1 | awk '{print $(NF-1)}')
 
     # Flush write
-    flush_result=$(dd if=/dev/zero of="$TEST_FILE" bs=1M count=1000 conv=fdatasync 2>&1)
+    flush_result=$(dd if=/dev/zero of="$TEST_FILE" bs=1M count="${TEST_SIZE_MB}" conv=fdatasync 2>&1)
     flush_speed=$(echo "$flush_result" | tail -1 | awk '{print $(NF-1)}')
 
     # Save the result to the array
@@ -62,5 +84,29 @@ run_repeated() {
     done
 }
 
-run_repeated
+main() {
+    #bind the cleanup function to EXIT and interrupt signals
+    trap cleanup EXIT INT TERM
+
+    #declare variables globally from within main to keep the top-level clean
+    declare -g TEST_FILE="testfile.bin"
+    declare -g TEST_SIZE_MB=1000
+    declare -g REPEAT_COUNT=5 # harusnya 6, soalnya run pertama di discard tp blm i sesuaiin
+    declare -g TIMING_FLOOR_MS="0"
+
+    #declare global arrays safely
+    declare -g -a BUFFERED_RESULTS=()
+    declare -g -a FLUSH_RESULTS=()
+    declare -g -a WARMREAD_RESULTS=()
+    declare -g -a COLDREAD_RESULTS=()
+    declare -g -a RANDOM_RESULTS=()
+
+    #establish the timing resolution
+    benchmark_timing_floor
+    
+    #execute the core logic
+    run_repeated
+}
+
+main "$@"
 
