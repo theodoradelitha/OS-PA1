@@ -129,16 +129,16 @@ benchmark_disk_read() {
     cold_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K count=256000 iflag=direct 2>&1)
     cold_speed=$(echo "$cold_read_result" | tail -1 | awk '{print $(NF-1)}')
 
-    WARMREAD_RESULTS+=($warm_speed)
-    COLDREAD_RESULTS+=($cold_speed)
+    WARMREAD_RESULTS+=("$warm_speed")
+    COLDREAD_RESULTS+=("$cold_speed")
 }
 
 benchmark_random() {
     # masih blm random, bacanya seq
-    random_result=$(dd if=$TEST_FILE of=/dev/null bs=4K 2>&1)
+    random_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K 2>&1)
     random_speed=$(echo "$random_result" | tail -1 | awk '{print $(NF-1)}')
 
-    RANDOM_RESULTS+=($random_speed)
+    RANDOM_RESULTS+=("$random_speed")
 }
 
 run_repeated() {
@@ -170,7 +170,7 @@ main() {
     declare -g -a CPU_FORK_RESULTS=()
     declare -g -a CPU_AWK_RESULTS=()
     declare -g -a MEM_IN_CACHE_RESULTS=()
-    declare -g -a MEM_OUT_CACH_RESULTS=()
+    declare -g -a MEM_OUT_CACHE_RESULTS=()
     declare -g -a BUFFERED_RESULTS=()
     declare -g -a FLUSH_RESULTS=()
     declare -g -a WARMREAD_RESULTS=()
