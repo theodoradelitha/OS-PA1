@@ -10,6 +10,9 @@ cleanup() {
     if [[ -f "awk_test_data.txt" ]]; then
         rm -f "awk_test_data.txt"
     fi
+    if [[ -f "/dev/shm/memtest.bin" ]]; then
+        rm -f "/dev/shm/memtest.bin"
+    fi
 }
 
 benchmark_cpu() {
@@ -50,6 +53,30 @@ benchmark_cpu() {
     CPU_AWK_RESULTS+=("$awk_ops")
 
     rm -f "$awk_file"
+}
+
+benchmark_memory() {
+    local in_cache_result
+    local in_cache_speed
+    local out_cache_result
+    local out_cache_speed
+    local l3_cache="Unknown"
+
+    #read the cache size from sysfs 
+    if [[ -f /sys/devices/system/cpu/cpu0/cache/index3/size ]]; then
+        l3_cache=$(cat /sys/devices/system/cpu/cpu0/cache/index3/size)
+    fi
+    echo "  (Detected L3 Cache size: $l3_cache)"
+
+    # -- 1. In-cache memory --
+    in_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=256K count=20000 2>&1)
+    in_cache_speed=$(echo "$in_cache_result" | tail -1 | awk '{print $(NF-1)}')
+    MEM_IN_CACHE_RESULTS+=("$in_cache_speed")
+
+    # -- 2. Out-of-cache memory --
+    out_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=1G count=2 2>&1)
+    out_cache_speed=$(echo "$out_cache_result" | tail -1 | awk '{print $(NF-1)}')
+    MEM_OUT_CACHE_RESULTS+=("$out_cache_speed")
 }
 
 benchmark_timing_floor(){
@@ -121,6 +148,7 @@ run_repeated() {
 
         # FUNCTIONS
         benchmark_cpu
+        benchmark_memory
         benchmark_disk_write
         benchmark_disk_read
         benchmark_random
@@ -141,6 +169,8 @@ main() {
     declare -g -a CPU_INT_RESULTS=()
     declare -g -a CPU_FORK_RESULTS=()
     declare -g -a CPU_AWK_RESULTS=()
+    declare -g -a MEM_IN_CACHE_RESULTS=()
+    declare -g -a MEM_OUT_CACH_RESULTS=()
     declare -g -a BUFFERED_RESULTS=()
     declare -g -a FLUSH_RESULTS=()
     declare -g -a WARMREAD_RESULTS=()
