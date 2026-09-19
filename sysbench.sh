@@ -7,6 +7,49 @@ cleanup() {
     if [[ -n "${TEST_FILE:-}" ]] && [[ -f "$TEST_FILE" ]]; then
         rm -f "$TEST_FILE"
     fi
+    if [[ -f "awk_test_data.txt" ]]; then
+        rm -f "awk_test_data.txt"
+    fi
+}
+
+benchmark_cpu() {
+    local start end elapsed
+
+    # -- 1. CPU Integer Throughput (Bash arithmetic) --
+    local int_iters=1000000
+    start=$(date +%s.%N)
+    local i=0
+    while (( i++ < int_iters )); do :; done
+    end=$(date +%s.%N)
+
+    elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN {print e-s}')
+    local int_ops=$(awk -v i="$int_iters" -v e="$elapsed" 'BEGIN {printf "%d", i / e}')
+    CPU_INT_RESULTS+=("$int_ops")
+
+    # -- 2. Fork Cost (Subshell spawn) --
+    local fork_iters=1000
+    start=$(date +%s.%N)
+    local j=0
+    while (( j++ < fork_iters )); do _=$(date +%s > /dev/null); done
+    end=$(date +%s.%N)
+
+    elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN {print e - s}')
+    local fork_ops=$(awk -v i="$fork_iters" -v e="$elapsed" 'BEGIN {printf "%d", i/e}')
+    CPU_FORK_RESULTS+=("$fork_ops")
+
+    # -- 3. Awk Throughput --
+    local awk_file="awk_test_data.txt"
+    seq 1 5000000 > "$awk_file"
+
+    start=$(date +%s.%N)
+    awk '{s+=$1} END {print s}' "$awk_file" > /dev/null
+    end=$(date +%s.%N)
+
+    elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN {print e-s}')
+    local awk_ops=$(awk -v i="5000000" -v e="$elapsed" 'BEGIN {printf "%d", i / e}')
+    CPU_AWK_RESULTS+=("$awk_ops")
+
+    rm -f "$awk_file"
 }
 
 benchmark_timing_floor(){
@@ -77,10 +120,10 @@ run_repeated() {
         echo "Run $i"
 
         # FUNCTIONS
+        benchmark_cpu
         benchmark_disk_write
         benchmark_disk_read
         benchmark_random
-
     done
 }
 
@@ -89,12 +132,15 @@ main() {
     trap cleanup EXIT INT TERM
 
     #declare variables globally from within main to keep the top-level clean
+    declare -g TIMING_FLOOR_MS="0"
     declare -g TEST_FILE="testfile.bin"
     declare -g TEST_SIZE_MB=1000
     declare -g REPEAT_COUNT=5 # harusnya 6, soalnya run pertama di discard tp blm i sesuaiin
-    declare -g TIMING_FLOOR_MS="0"
 
     #declare global arrays safely
+    declare -g -a CPU_INT_RESULTS=()
+    declare -g -a CPU_FORK_RESULTS=()
+    declare -g -a CPU_AWK_RESULTS=()
     declare -g -a BUFFERED_RESULTS=()
     declare -g -a FLUSH_RESULTS=()
     declare -g -a WARMREAD_RESULTS=()
@@ -103,7 +149,7 @@ main() {
 
     #establish the timing resolution
     benchmark_timing_floor
-    
+
     #execute the core logic
     run_repeated
 }
