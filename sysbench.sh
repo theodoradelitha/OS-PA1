@@ -184,8 +184,58 @@ main() {
     #declare variables globally from within main to keep the top-level clean
     declare -g TIMING_FLOOR_MS="0"
     declare -g TEST_FILE="testfile.bin"
+
+    #default values
     declare -g TEST_SIZE_MB=1000
     declare -g REPEAT_COUNT=5 
+
+    #parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quick)
+                TEST_SIZE_MB=50
+                REPEAT_COUNT=2
+                shift
+                ;;
+            --full)
+                TEST_SIZE_MB=1000
+                REPEAT_COUNT=5
+                shift
+                ;;
+            --size)
+                #ensure the user provided a size argument
+                if [[ -n "${2:-}" ]]; then
+                    #strip 'G' or 'M' and convert everything to MB for the dd count
+                    if [[ "$2" == *G ]]; then
+                        TEST_SIZE_MB=$((${2%G} * 1024))
+                    elif [[ "$2" == *M ]]; then
+                        TEST_SIZE_MB=${2%M}
+                    else
+                        TEST_SIZE_MB=$2
+                    fi
+                    shift 2
+                else
+                    echo "Error: --size requires a value (e.g., 100M or 1G)"
+                    exit 1
+                fi
+                ;;
+            *)
+                echo "Unknown argument: $1"
+                shift
+                ;;
+        esac
+    done
+
+    # -- Safety: Refuse to fill the disk --
+    #get available disk space in MB
+    local free_space_kb
+    free_space_kb=$(df -k . | awk 'NR==2 {print $4}')
+    local free_space_mb=$((free_space_kb / 1024))
+
+    if (( TEST_SIZE_MB > free_space_mb )); then
+        echo "Error: Requested file size (${TEST_SIZE_MB}MB) exceeds available free space (${free_space_mb}MB). Refusing to run."
+        exit 1
+    fi
 
     #declare global arrays safely
     declare -g -a CPU_INT_RESULTS=()
@@ -199,7 +249,6 @@ main() {
     declare -g -a COLDREAD_RESULTS=()
     declare -g -a RANDOM_RESULTS=()
 
-    #establish the timing resolution
     benchmark_timing_floor
 
     #execute the core logic
