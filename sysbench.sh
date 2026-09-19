@@ -69,12 +69,12 @@ benchmark_memory() {
     echo "  (Detected L3 Cache size: $l3_cache)"
 
     # -- 1. In-cache memory --
-    in_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=256K count=20000 2>&1)
+    in_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=256K count=1000 2>&1)
     in_cache_speed=$(echo "$in_cache_result" | tail -1 | awk '{print $(NF-1)}')
     MEM_IN_CACHE_RESULTS+=("$in_cache_speed")
 
     # -- 2. Out-of-cache memory --
-    out_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=1G count=2 2>&1)
+    out_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=100M count=5 2>&1)
     out_cache_speed=$(echo "$out_cache_result" | tail -1 | awk '{print $(NF-1)}')
     MEM_OUT_CACHE_RESULTS+=("$out_cache_speed")
 }
@@ -85,6 +85,7 @@ benchmark_timing_floor(){
     local start_time
     local end_time
     local elapsed
+    local i
 
     #capture the start time using nanosecond resolution wall-clock time
     start_time=$(date +%s.%N)
@@ -140,6 +141,7 @@ benchmark_random() {
     local elapsed
     local random_block
     local iops
+    local i
 
     start=$(date +%s%N)
 
@@ -160,6 +162,8 @@ benchmark_random() {
 }
 
 run_repeated() {
+    local i
+
     for ((i=1; i<=REPEAT_COUNT; i++))
     do
         echo "Run $i"
