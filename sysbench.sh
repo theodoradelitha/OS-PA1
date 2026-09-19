@@ -122,12 +122,14 @@ benchmark_disk_write() {
 }
 
 benchmark_disk_read() {
+    local read_count=$((TEST_SIZE_MB * 1024 / 4))
+
     # Warm read
-    warm_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K 2>&1)
+    warm_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K count="$read_count" 2>&1)
     warm_speed=$(echo "$warm_read_result" | tail -1 | awk '{print $(NF-1)}')
 
     # Cold read (bypass cache)
-    cold_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K count=256000 iflag=direct 2>&1)
+    cold_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K count="$read_count" iflag=direct 2>&1)
     cold_speed=$(echo "$cold_read_result" | tail -1 | awk '{print $(NF-1)}')
 
     WARMREAD_RESULTS+=("$warm_speed")
@@ -135,7 +137,7 @@ benchmark_disk_read() {
 }
 
 benchmark_random() {
-    local count=256000
+    local count=$(( TEST_SIZE_MB * 1024 / 4 ))
     local start
     local end
     local elapsed
@@ -147,7 +149,7 @@ benchmark_random() {
 
     for ((i=0; i<count; i++))
     do
-        random_block=$(( ((RANDOM << 15) | RANDOM) % 256000 ))
+        random_block=$(( ((RANDOM << 15) | RANDOM) % count ))
 
         dd if="$TEST_FILE" of=/dev/null bs=4K count=1 skip="$random_block" 2>/dev/null
     done
@@ -159,6 +161,231 @@ benchmark_random() {
     iops=$(( count * 1000000000 / elapsed ))
 
     RANDOM_RESULTS+=("$iops")
+}
+
+calculate_stats() {
+    local array_name="$1"
+
+    local -a values
+    eval "values=(\"\${${array_name}[@]}\")"
+
+    local count=${#values[@]}
+
+    IFS=$'\n' sorted=($(printf '%s\n' "${values[@]}" | sort -n))
+    unset IFS
+
+    local min="${sorted[0]}"
+    local max="${sorted[$((count - 1))]}"
+    local median
+
+    if (( count % 2 == 1 )); then
+        median="${sorted[$((count / 2))]}"
+    else
+        local mid1="${sorted[$((count / 2 - 1))]}"
+        local mid2="${sorted[$((count / 2))]}"
+
+        median=$(awk -v a="$mid1" -v b="$mid2" \
+            'BEGIN { printf "%.2f", (a+b)/2 }')
+    fi
+
+    echo "$median $min $max"
+}
+
+print_result() {
+    local name="$1"
+    local array_name="$2"
+    local unit="$3"
+
+    read -r median min max <<< "$(calculate_stats "$array_name")"
+
+    printf "%-30s %10s %10s %10s   %s\n" \
+        "$name" "$median" "$min" "$max" "$unit"
+}
+
+print_benchmark_results() {
+
+    echo
+    echo "=== Benchmarks (${REPEAT_COUNT} runs, median, first discarded) ==="
+    printf "%-30s %10s %10s %10s   %s\n" \
+        "BENCHMARK" "MEDIAN" "MIN" "MAX" "UNIT"
+
+    print_result "CPU integer" \
+        CPU_INT_RESULTS "Mops/s"
+
+    print_result "CPU fork" \
+        CPU_FORK_RESULTS "ops/s"
+
+    print_result "CPU awk" \
+        CPU_AWK_RESULTS "Mops/s"
+
+    print_result "Memory read (in cache, 256K)" \
+        MEM_IN_CACHE_RESULTS "GiB/s"
+
+    print_result "Memory read (out of cache, 1G)" \
+        MEM_OUT_CACHE_RESULTS "GiB/s"
+
+    print_result "Disk write (buffered)" \
+        BUFFERED_RESULTS "GiB/s"
+
+    print_result "Disk write (fsync)" \
+        FLUSH_RESULTS "GiB/s"
+
+    print_result "Disk read (warm, page cache)" \
+        WARMREAD_RESULTS "GiB/s"
+
+    print_result "Disk read (cold, fadvise)" \
+        COLDREAD_RESULTS "GiB/s"
+
+    print_result "Disk random 4K read" \
+        RANDOM_RESULTS "IOPS"
+}
+
+print_storage_hierarchy() {
+
+    local cache_stats
+    local memory_stats
+    local disk_stats
+    local random_stats
+
+    cache_stats=$(calculate_stats "MEM_IN_CACHE_RESULTS")
+    memory_stats=$(calculate_stats "MEM_OUT_CACHE_RESULTS")
+    disk_stats=$(calculate_stats "COLDREAD_RESULTS")
+    random_stats=$(calculate_stats "RANDOM_RESULTS")
+
+    local cache_speed
+    local memory_speed
+    local disk_speed
+    local random_iops
+
+    cache_speed=$(echo "$cache_stats" | awk '{print $1}')
+    memory_speed=$(echo "$memory_stats" | awk '{print $1}')
+    disk_speed=$(echo "$disk_stats" | awk '{print $1}')
+    random_iops=$(echo "$random_stats" | awk '{print $1}')
+
+    # Convert random 4K IOPS -> GiB/s
+    local random_speed
+    random_speed=$(awk -v iops="$random_iops" '
+        BEGIN {
+            printf "%.6f", (iops * 4096) / 1073741824
+        }
+    ')
+
+    # Calculate ratios using in-cache memory as baseline
+    local memory_ratio
+    local disk_ratio
+    local random_ratio
+
+    memory_ratio=$(awk -v cache="$cache_speed" -v mem="$memory_speed" '
+        BEGIN { if (mem > 0)
+                    printf "%.1f", cache / mem
+                else
+                    print "N/A"
+        }
+    ')
+
+    disk_ratio=$(awk -v cache="$cache_speed" -v disk="$disk_speed" '
+        BEGIN { if (disk > 0)
+                    printf "%.1f", cache / disk
+                else
+                    print "N/A"
+        }
+    ')
+
+    random_ratio=$(awk -v cache="$cache_speed" -v random="$random_speed" '
+        BEGIN { if (random > 0)
+                    printf "%.1f", cache / random
+                else
+                    print "N/A" 
+        }
+    ')
+
+    echo
+    echo "=== The storage hierarchy, measured ==="
+
+    printf "  In-cache memory  %.2f GiB/s   ──  1.0x   (baseline)\n" \
+        "$cache_speed"
+
+    printf "  Main memory      %.2f GiB/s   ──  %.1fx slower than cache\n" \
+        "$memory_speed" "$memory_ratio"
+
+    printf "  Disk sequential  %.2f GiB/s   ──  %.1fx slower than cache\n" \
+        "$disk_speed" "$disk_ratio"
+
+    printf "  Disk random 4K   %.2f GiB/s   ──  %.1fx slower than cache\n" \
+        "$random_speed" "$random_ratio"
+}
+
+
+print_system_inventory() {
+    echo "=== System Inventory ==="
+
+    echo "CPU            $(lscpu | grep 'Model name:' | sed 's/Model name:[[:space:]]*//'), $(lscpu | grep '^CPU(s):' | awk '{print $2}') cores"
+
+    echo "Cache          $(lscpu | grep 'L1d cache:' | awk '{print $3, $4}')  $(lscpu | grep 'L1i cache:' | awk '{print $3, $4}')  $(lscpu | grep 'L2 cache:' | awk '{print $3, $4}')  $(lscpu | grep 'L3 cache:' | awk '{print $3, $4}')"
+
+    echo "Memory         $(free -h | awk '/^Mem:/ {print $2 " total, " $7 " available"}')  $(free -h | awk '/^Swap:/ {print $2 " swap"}')"
+
+    echo "Storage        $(lsblk -d -o NAME,SIZE,ROTA,MODEL | tail -n +2)"
+
+    echo "Filesystem     $(df -h / | awk 'NR==2 {print $4 " free of " $2}')"
+
+    echo "Kernel         $(uname -r)   $(lsb_release -ds)"
+
+    echo "Virtualised    $(systemd-detect-virt)"
+}
+
+export_csv() {
+
+    local output_file="benchmark_results.csv"
+
+    # Create CSV header
+    echo "Benchmark,Median,Min,Max,Unit" > "$output_file"
+
+    # Export benchmark results
+    local median min max
+
+    read -r median min max <<< "$(calculate_stats "CPU_INT_RESULTS")"
+    printf "CPU integer,%s,%s,%s,Mops/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "CPU_FORK_RESULTS")"
+    printf "CPU fork,%s,%s,%s,ops/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "CPU_AWK_RESULTS")"
+    printf "CPU awk,%s,%s,%s,Mops/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "MEM_IN_CACHE_RESULTS")"
+    printf "Memory read (in cache),%s,%s,%s,GiB/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "MEM_OUT_CACHE_RESULTS")"
+    printf "Memory read (out of cache),%s,%s,%s,GiB/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "BUFFERED_RESULTS")"
+    printf "Disk write (buffered),%s,%s,%s,GiB/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "FLUSH_RESULTS")"
+    printf "Disk write (fdatasync),%s,%s,%s,GiB/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "WARMREAD_RESULTS")"
+    printf "Disk read (warm),%s,%s,%s,GiB/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "COLDREAD_RESULTS")"
+    printf "Disk read (cold),%s,%s,%s,GiB/s\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    read -r median min max <<< "$(calculate_stats "RANDOM_RESULTS")"
+    printf "Disk random 4K read,%s,%s,%s,IOPS\n" \
+        "$median" "$min" "$max" >> "$output_file"
+
+    echo
+    echo "CSV exported to: $output_file"
 }
 
 run_repeated() {
@@ -174,6 +401,26 @@ run_repeated() {
         benchmark_disk_write
         benchmark_disk_read
         benchmark_random
+
+        if (( i == 1 )); then
+            echo "  First run discarded (warm-up)"
+
+            CPU_INT_RESULTS=()
+            CPU_FORK_RESULTS=()
+            CPU_AWK_RESULTS=()
+
+            MEM_IN_CACHE_RESULTS=()
+            MEM_OUT_CACHE_RESULTS=()
+
+            BUFFERED_RESULTS=()
+            FLUSH_RESULTS=()
+
+            WARMREAD_RESULTS=()
+            COLDREAD_RESULTS=()
+
+            RANDOM_RESULTS=()
+        fi
+
     done
 }
 
@@ -187,7 +434,7 @@ main() {
 
     #default values
     declare -g TEST_SIZE_MB=1000
-    declare -g REPEAT_COUNT=5 
+    declare -g REPEAT_COUNT=6
 
     #parse arguments
     while [[ $# -gt 0 ]]; do
@@ -253,7 +500,18 @@ main() {
 
     #execute the core logic
     run_repeated
+
+    # print system inventory
+    print_system_inventory
+
+    # process and display benchmark results
+    print_benchmark_results
+
+    # calculate storage hierarchy ratios
+    print_storage_hierarchy
+
+    # export results to CSV
+    export_csv
 }
 
 main "$@"
-
