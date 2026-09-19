@@ -134,11 +134,29 @@ benchmark_disk_read() {
 }
 
 benchmark_random() {
-    # masih blm random, bacanya seq
-    random_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K 2>&1)
-    random_speed=$(echo "$random_result" | tail -1 | awk '{print $(NF-1)}')
+    local count=256000
+    local start
+    local end
+    local elapsed
+    local random_block
+    local iops
 
-    RANDOM_RESULTS+=("$random_speed")
+    start=$(date +%s%N)
+
+    for ((i=0; i<count; i++))
+    do
+        random_block=$(( ((RANDOM << 15) | RANDOM) % 256000 ))
+
+        dd if="$TEST_FILE" of=/dev/null bs=4K count=1 skip="$random_block" 2>/dev/null
+    done
+
+    end=$(date +%s%N)
+
+    elapsed=$((end - start))
+
+    iops=$(( count * 1000000000 / elapsed ))
+
+    RANDOM_RESULTS+=("$iops")
 }
 
 run_repeated() {
@@ -163,7 +181,7 @@ main() {
     declare -g TIMING_FLOOR_MS="0"
     declare -g TEST_FILE="testfile.bin"
     declare -g TEST_SIZE_MB=1000
-    declare -g REPEAT_COUNT=5 # harusnya 6, soalnya run pertama di discard tp blm i sesuaiin
+    declare -g REPEAT_COUNT=5 
 
     #declare global arrays safely
     declare -g -a CPU_INT_RESULTS=()
