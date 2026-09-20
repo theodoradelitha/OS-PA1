@@ -165,11 +165,19 @@ benchmark_random() {
 
 calculate_stats() {
     local array_name="$1"
+    local count
+
+    #safely check the exact length of the array first
+    eval "count=\${#${array_name}[@]}"
+
+    #if the array is empty (because it was skipped), exit immediately
+    if (( count == 0 )); then
+        echo "0 0 0"
+        return
+    fi
 
     local -a values
     eval "values=(\"\${${array_name}[@]}\")"
-
-    local count=${#values[@]}
 
     IFS=$'\n' sorted=($(printf '%s\n' "${values[@]}" | sort -n))
     unset IFS
@@ -502,12 +510,20 @@ run_repeated() {
     do
         echo "Run $i"
 
-        # FUNCTIONS
-        benchmark_cpu
-        benchmark_memory
-        benchmark_disk_write
-        benchmark_disk_read
-        benchmark_random
+        if [[ "$RUN_ONLY" == "all" || "$RUN_ONLY" == *"cpu"* ]]; then
+            benchmark_cpu
+        fi
+        
+        if [[ "$RUN_ONLY" == "all" || "$RUN_ONLY" == *"mem"* ]]; then
+            benchmark_memory
+        fi
+        
+        if [[ "$RUN_ONLY" == "all" || "$RUN_ONLY" == *"disk"* ]]; then
+            benchmark_disk_write
+            benchmark_disk_read
+            benchmark_random
+        fi
+
 
         if (( i == 1 )); then
             echo "  First run discarded (warm-up)"
@@ -527,7 +543,6 @@ run_repeated() {
 
             RANDOM_RESULTS=()
         fi
-
     done
 }
 
@@ -542,22 +557,40 @@ main() {
     #default values
     declare -g TEST_SIZE_MB=1000
     declare -g REPEAT_COUNT=6
+    declare -g RUN_ONLY="all"
 
     #parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --quick)
                 TEST_SIZE_MB=50
-                REPEAT_COUNT=4
+                REPEAT_COUNT=3
                 shift
                 ;;
             --full)
                 TEST_SIZE_MB=1000
-                REPEAT_COUNT=5
+                REPEAT_COUNT=6
                 shift
                 ;;
+            --only)
+                if [[ -n "${2:-}" ]]; then
+                    RUN_ONLY="$2"
+                    shift 2
+                else
+                    echo "Error: --only requires a value (e.g., cpu,mem)"
+                    exit 1
+                fi
+                ;;
+            --repeat)
+                if [[ -n "${2:-}" ]]; then
+                    REPEAT_COUNT="$2"
+                    shift 2
+                else
+                    echo "Error: --repeat requires a number (e.g., 5)"
+                    exit 1
+                fi
+                ;;
             --size)
-                #ensure the user provided a size argument
                 if [[ -n "${2:-}" ]]; then
                     #strip 'G' or 'M' and convert everything to MB for the dd count
                     if [[ "$2" == *G ]]; then
