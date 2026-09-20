@@ -338,10 +338,41 @@ export_csv() {
 
     local output_file="benchmark_results.csv"
 
-    # Create CSV header
-    echo "Benchmark,Median,Min,Max,Unit" > "$output_file"
+    echo "=== System Inventory ===" > "$output_file"
+    echo "Metric,Value" >> "$output_file"
 
-    # Export benchmark results
+    printf 'CPU,"%s"\n' \
+        "$(lscpu | grep 'Model name:' | sed 's/Model name:[[:space:]]*//'), $(lscpu | grep '^CPU(s):' | awk '{print $2}') cores" \
+        >> "$output_file"
+
+    printf 'Cache,"%s"\n' \
+        "$(lscpu | grep 'L1d cache:' | awk '{print $3, $4}')  $(lscpu | grep 'L1i cache:' | awk '{print $3, $4}')  $(lscpu | grep 'L2 cache:' | awk '{print $3, $4}')  $(lscpu | grep 'L3 cache:' | awk '{print $3, $4}')" \
+        >> "$output_file"
+
+    printf 'Memory,"%s"\n' \
+        "$(free -h | awk '/^Mem:/ {print $2 " total, " $7 " available"}')  $(free -h | awk '/^Swap:/ {print $2 " swap"}')" \
+        >> "$output_file"
+
+    printf 'Storage,"%s"\n' \
+        "$(lsblk -d -o NAME,SIZE,ROTA,MODEL | tail -n +2 | tr '\n' ' ')" \
+        >> "$output_file"
+
+    printf 'Filesystem,"%s"\n' \
+        "$(df -h / | awk 'NR==2 {print $4 " free of " $2}')" \
+        >> "$output_file"
+
+    printf 'Kernel,"%s"\n' \
+        "$(uname -r)   $(lsb_release -ds)" \
+        >> "$output_file"
+
+    printf 'Virtualised,"%s"\n' \
+        "$(systemd-detect-virt)" \
+        >> "$output_file"
+
+    echo >> "$output_file"
+    echo "=== Benchmarks (${REPEAT_COUNT} runs, median, first discarded) ===" >> "$output_file"
+    echo "Benchmark,Median,Min,Max,Unit" >> "$output_file"
+
     local median min max
 
     read -r median min max <<< "$(calculate_stats "CPU_INT_RESULTS")"
@@ -383,6 +414,82 @@ export_csv() {
     read -r median min max <<< "$(calculate_stats "RANDOM_RESULTS")"
     printf "Disk random 4K read,%s,%s,%s,IOPS\n" \
         "$median" "$min" "$max" >> "$output_file"
+
+    echo >> "$output_file"
+    echo "=== Storage Hierarchy ===" >> "$output_file"
+    echo "Metric,Speed,Ratio,Unit" >> "$output_file"
+
+    local cache_stats
+    local memory_stats
+    local disk_stats
+    local random_stats
+
+    cache_stats=$(calculate_stats "MEM_IN_CACHE_RESULTS")
+    memory_stats=$(calculate_stats "MEM_OUT_CACHE_RESULTS")
+    disk_stats=$(calculate_stats "COLDREAD_RESULTS")
+    random_stats=$(calculate_stats "RANDOM_RESULTS")
+
+    local cache_speed
+    local memory_speed
+    local disk_speed
+    local random_iops
+    local random_speed
+
+    cache_speed=$(echo "$cache_stats" | awk '{print $1}')
+    memory_speed=$(echo "$memory_stats" | awk '{print $1}')
+    disk_speed=$(echo "$disk_stats" | awk '{print $1}')
+    random_iops=$(echo "$random_stats" | awk '{print $1}')
+
+    # Convert random 4K IOPS to GiB/s
+    random_speed=$(awk -v iops="$random_iops" '
+        BEGIN {
+            printf "%.6f", (iops * 4096) / 1073741824
+        }
+    ')
+
+    local memory_ratio
+    local disk_ratio
+    local random_ratio
+
+    memory_ratio=$(awk -v cache="$cache_speed" -v mem="$memory_speed" '
+        BEGIN {
+            if (mem > 0)
+                printf "%.1f", cache / mem
+            else
+                print "N/A"
+        }
+    ')
+
+    disk_ratio=$(awk -v cache="$cache_speed" -v disk="$disk_speed" '
+        BEGIN {
+            if (disk > 0)
+                printf "%.1f", cache / disk
+            else
+                print "N/A"
+        }
+    ')
+
+    random_ratio=$(awk -v cache="$cache_speed" -v random="$random_speed" '
+        BEGIN {
+            if (random > 0)
+                printf "%.1f", cache / random
+            else
+                print "N/A"
+        }
+    ')
+
+    printf "In-cache memory,%.2f,1.0x,GiB/s\n" \
+        "$cache_speed" >> "$output_file"
+
+    printf "Main memory,%.2f,%sx slower than cache,GiB/s\n" \
+        "$memory_speed" "$memory_ratio" >> "$output_file"
+
+    printf "Disk sequential,%.2f,%sx slower than cache,GiB/s\n" \
+        "$disk_speed" "$disk_ratio" >> "$output_file"
+
+    printf "Disk random 4K,%.2f,%sx slower than cache,GiB/s\n" \
+        "$random_speed" "$random_ratio" >> "$output_file"
+
 
     echo
     echo "CSV exported to: $output_file"
