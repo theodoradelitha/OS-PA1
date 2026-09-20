@@ -18,7 +18,7 @@ cleanup() {
 benchmark_cpu() {
     local start end elapsed
 
-    # -- 1. CPU Integer Throughput (Bash arithmetic) --
+    # -- 1. CPU Integer Throughput --
     local int_iters=1000000
     start=$(date +%s.%N)
     local i=0
@@ -26,10 +26,11 @@ benchmark_cpu() {
     end=$(date +%s.%N)
 
     elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN {print e-s}')
-    local int_ops=$(awk -v i="$int_iters" -v e="$elapsed" 'BEGIN {printf "%d", i / e}')
+    #converted to Mops/s
+    local int_ops=$(awk -v i="$int_iters" -v e="$elapsed" 'BEGIN {printf "%.0f", (i / e) / 1000000}')
     CPU_INT_RESULTS+=("$int_ops")
 
-    # -- 2. Fork Cost (Subshell spawn) --
+    # -- 2. Fork Cost --
     local fork_iters=1000
     start=$(date +%s.%N)
     local j=0
@@ -37,7 +38,7 @@ benchmark_cpu() {
     end=$(date +%s.%N)
 
     elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN {print e - s}')
-    local fork_ops=$(awk -v i="$fork_iters" -v e="$elapsed" 'BEGIN {printf "%d", i/e}')
+    local fork_ops=$(awk -v i="$fork_iters" -v e="$elapsed" 'BEGIN {printf "%.0f", i/e}')
     CPU_FORK_RESULTS+=("$fork_ops")
 
     # -- 3. Awk Throughput --
@@ -49,7 +50,8 @@ benchmark_cpu() {
     end=$(date +%s.%N)
 
     elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN {print e-s}')
-    local awk_ops=$(awk -v i="5000000" -v e="$elapsed" 'BEGIN {printf "%d", i / e}')
+    #converted to Mops/s
+    local awk_ops=$(awk -v i="5000000" -v e="$elapsed" 'BEGIN {printf "%.0f", (i / e) / 1000000}')
     CPU_AWK_RESULTS+=("$awk_ops")
 
     rm -f "$awk_file"
@@ -62,20 +64,19 @@ benchmark_memory() {
     local out_cache_speed
     local l3_cache="Unknown"
 
-    #read the cache size from sysfs 
     if [[ -f /sys/devices/system/cpu/cpu0/cache/index3/size ]]; then
         l3_cache=$(cat /sys/devices/system/cpu/cpu0/cache/index3/size)
     fi
     echo "  (Detected L3 Cache size: $l3_cache)"
 
     # -- 1. In-cache memory --
-    in_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=256K count=1000 2>&1)
-    in_cache_speed=$(echo "$in_cache_result" | tail -1 | awk '{print $(NF-1)}')
+    in_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=1M count=10 2>&1)
+    in_cache_speed=$(echo "$in_cache_result" | awk '/copied/ { for(i=1;i<=NF;i++) if($i=="s,") printf "%.2f", ($1 / 1073741824) / $(i-1) }')
     MEM_IN_CACHE_RESULTS+=("$in_cache_speed")
 
     # -- 2. Out-of-cache memory --
-    out_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=100M count=5 2>&1)
-    out_cache_speed=$(echo "$out_cache_result" | tail -1 | awk '{print $(NF-1)}')
+    out_cache_result=$(dd if=/dev/zero of=/dev/shm/memtest.bin bs=1M count=500 2>&1)
+    out_cache_speed=$(echo "$out_cache_result" | awk '/copied/ { for(i=1;i<=NF;i++) if($i=="s,") printf "%.2f", ($1 / 1073741824) / $(i-1) }')
     MEM_OUT_CACHE_RESULTS+=("$out_cache_speed")
 }
 
@@ -108,15 +109,14 @@ benchmark_timing_floor(){
 }
 
 benchmark_disk_write() {
-    # Buffered write
+    # Buffered write (convert bytes/time to GiB/s)
     buffered_result=$(dd if=/dev/zero of="$TEST_FILE" bs=1M count="${TEST_SIZE_MB}" 2>&1)
-    buffered_speed=$(echo "$buffered_result" | tail -1 | awk '{print $(NF-1)}')
+    buffered_speed=$(echo "$buffered_result" | awk '/copied/ { for(i=1;i<=NF;i++) if($i=="s,") printf "%.2f", ($1 / 1073741824) / $(i-1) }')
 
-    # Flush write
+    # Flush write (convert bytes/time to GiB/s)
     flush_result=$(dd if=/dev/zero of="$TEST_FILE" bs=1M count="${TEST_SIZE_MB}" conv=fdatasync 2>&1)
-    flush_speed=$(echo "$flush_result" | tail -1 | awk '{print $(NF-1)}')
+    flush_speed=$(echo "$flush_result" | awk '/copied/ { for(i=1;i<=NF;i++) if($i=="s,") printf "%.2f", ($1 / 1073741824) / $(i-1) }')
 
-    # Save the result to the array
     BUFFERED_RESULTS+=("$buffered_speed")
     FLUSH_RESULTS+=("$flush_speed")
 }
@@ -124,13 +124,13 @@ benchmark_disk_write() {
 benchmark_disk_read() {
     local read_count=$((TEST_SIZE_MB * 1024 / 4))
 
-    # Warm read
+    # Warm read (convert bytes/time to GiB/s)
     warm_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K count="$read_count" 2>&1)
-    warm_speed=$(echo "$warm_read_result" | tail -1 | awk '{print $(NF-1)}')
+    warm_speed=$(echo "$warm_read_result" | awk '/copied/ { for(i=1;i<=NF;i++) if($i=="s,") printf "%.2f", ($1 / 1073741824) / $(i-1) }')
 
-    # Cold read (bypass cache)
+    # Cold read (convert bytes/time to GiB/s)
     cold_read_result=$(dd if="$TEST_FILE" of=/dev/null bs=4K count="$read_count" iflag=direct 2>&1)
-    cold_speed=$(echo "$cold_read_result" | tail -1 | awk '{print $(NF-1)}')
+    cold_speed=$(echo "$cold_read_result" | awk '/copied/ { for(i=1;i<=NF;i++) if($i=="s,") printf "%.2f", ($1 / 1073741824) / $(i-1) }')
 
     WARMREAD_RESULTS+=("$warm_speed")
     COLDREAD_RESULTS+=("$cold_speed")
@@ -441,7 +441,7 @@ main() {
         case "$1" in
             --quick)
                 TEST_SIZE_MB=50
-                REPEAT_COUNT=2
+                REPEAT_COUNT=4
                 shift
                 ;;
             --full)
